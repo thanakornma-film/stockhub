@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root{
+  --navy:#0B3C5D; --blue:#0078D4; --blue-d:#005A9E;
+  --bg:#F5F6F8; --border:#E1DFDD; --ink:#1B1F23; --sub:#616670;
+  --green:#107C10; --amber:#B25E00; --red:#C8211C;
+}
+body{ background:var(--bg); color:var(--ink); font-family:"Segoe UI",system-ui,Arial,sans-serif; }

@@ -1,0 +1,136 @@
+// StockHub — domain model
+// ความจริงของสต็อกอยู่ที่ Arincare เสมอ: ตาราง StockMovement คือ log ที่ sync job ดึงมาจาก
+// Arincare (ขาย/รับสินค้า/โอน/ปรับสต็อก) แล้ว CurrentStock คือยอดสะสมที่คำนวณจาก movement
+// ห้ามให้หน้าเว็บเขียนทับ CurrentStock ตรงๆ — ต้องผ่าน movement เสมอ เพื่อให้ audit trail ครบ
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Branch {
+  id        String   @id @default(cuid())
+  code      String   @unique // เช่น "00003", "00004" (ตรงกับรหัสสาขาใน Arincare)
+  name      String
+  stocks    CurrentStock[]
+  movementsFrom StockMovement[] @relation("fromBranch")
+  movementsTo   StockMovement[] @relation("toBranch")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  sku         String   @unique // รหัสสินค้าตาม Arincare (เช่น PCO00124)
+  name        String
+  unit        String
+  abcClass    String?  // A / B / C
+  xyzClass    String?  // X / Y / Z
+  lastClassifiedAt DateTime?
+  lots        Lot[]
+  stocks      CurrentStock[]
+  suggestions TransferSuggestion[]
+}
+
+model Lot {
+  id         String   @id @default(cuid())
+  lotNo      String
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  receivedAt DateTime?
+  expiresAt  DateTime?
+  stocks     CurrentStock[]
+
+  @@unique([productId, lotNo])
+}
+
+// ยอดคงเหลือปัจจุบัน ต่อ (สินค้า + ล็อต + สาขา) — อัปเดตโดย sync job เท่านั้น
+model CurrentStock {
+  id        String  @id @default(cuid())
+  productId String
+  lotId     String
+  branchId  String
+  qty       Int
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id])
+  lot     Lot     @relation(fields: [lotId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id])
+
+  @@unique([productId, lotId, branchId])
+}
+
+enum MovementType {
+  RECEIPT        // รับสินค้าจาก Supplier
+  SALE           // ขายหน้าร้าน
+  TRANSFER_OUT
+  TRANSFER_IN
+  COUNT_ADJUST   // ปรับจากผลตรวจนับ
+}
+
+// Log การเคลื่อนไหวทุกรายการ ดึงมาจาก Arincare โดย sync job — เป็นแหล่งคำนวณ CurrentStock
+model StockMovement {
+  id           String       @id @default(cuid())
+  type         MovementType
+  productId    String
+  lotId        String
+  qty          Int          // บวก = เข้า, ลบ = ออก
+  fromBranchId String?
+  toBranchId   String?
+  arincareRefId String?     @unique // เลขที่อ้างอิงจาก Arincare (กันข้อมูลซ้ำตอน sync)
+  occurredAt   DateTime
+  syncedAt     DateTime     @default(now())
+
+  fromBranch Branch? @relation("fromBranch", fields: [fromBranchId], references: [id])
+  toBranch   Branch? @relation("toBranch", fields: [toBranchId], references: [id])
+}
+
+enum SuggestionStatus {
+  PENDING
+  TRANSFER_CREATED
+  DISMISSED
+}
+
+// คำแนะนำโอนย้ายที่คำนวณจาก ABC-XYZ + สต็อก + วันหมดอายุ (คำนวณในระบบนี้ ไม่ใช่ข้อมูลจาก Arincare)
+model TransferSuggestion {
+  id            String   @id @default(cuid())
+  productId     String
+  lotId         String?
+  fromBranchId  String
+  toBranchId    String
+  suggestedQty  Int
+  reasonCode    String   // ROP_BREACH | EXPIRY_RISK | DEMAND_IMBALANCE
+  reasonText    String
+  status        SuggestionStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+}
+
+enum CountSessionStatus {
+  OPEN
+  CLOSED
+}
+
+// รอบตรวจนับสต็อก (Cycle Count) — ความถี่กำหนดตามกลุ่ม ABC-XYZ ที่ตั้งค่าไว้
+model CountSession {
+  id         String   @id @default(cuid())
+  branchId   String
+  scopeLabel String   // เช่น "กลุ่ม A ทั้งหมด"
+  status     CountSessionStatus @default(OPEN)
+  createdAt  DateTime @default(now())
+  closedAt   DateTime?
+  lines      CountLine[]
+}
+
+model CountLine {
+  id             String   @id @default(cuid())
+  sessionId      String
+  productId      String
+  lotId          String
+  systemQty      Int      // ยอดในระบบ ณ ตอนเริ่มนับ (snapshot)
+  countedQty     Int?     // ยอดที่นับได้จริง (null = ยังไม่นับ)
+  session CountSession @relation(fields: [sessionId], references: [id])
+}
